@@ -97,13 +97,22 @@ export class AudioEngine {
     }
   }
 
-  // --- NUOVA FUNZIONE PER RIPRODURRE LA REGISTRAZIONE ---
-  playSequence(sequence: RecordedNote[]) {
-    if (!this.instrument || !this.audioCtx) return;
+  // --- FUNZIONE PLAY AGGIORNATA E POTENZIATA ---
+  async playSequence(sequence: RecordedNote[]) {
+    if (!this.instrument || !this.audioCtx || sequence.length === 0) return;
+
+    // Riattiva l'audio se il browser lo ha messo in pausa
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
+    }
+
+    this.stopNote(); // Ferma note che suonano ancora
+
     const now = this.audioCtx.currentTime;
     
     sequence.forEach(note => {
-      this.instrument.play(note.midi, now + note.startTime, { 
+      // Aggiungiamo un piccolo ritardo di 0.1s per sincronizzare il processore audio
+      this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration,
         gain: 0.8 
       });
@@ -150,7 +159,7 @@ export class AudioEngine {
         this.recordNoteChange(midi);
       }
       
-      // SUONA SOLO SE IN LIVE (Bug corretto)
+      // SUONA SOLO IN MODALITÀ LIVE
       if (this.mode === 'live') {
         this.playNote(midi);
       }
@@ -235,5 +244,5 @@ export class AudioEngine {
   }
 
   getAnalyser() { return this.analyser; }
-  getSequence() { return this.sequence; }
+  getSequence() { return [...this.sequence]; } // Cloniamo la sequenza per sicurezza
 }
