@@ -29,8 +29,18 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const init = async () => {
-      const proStatus = await licenseService.isUserPro();
-      setIsPro(proStatus);
+      // 1. Controllo se l'utente è appena tornato dal pagamento
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('payment') === 'success') {
+        await licenseService.activatePro();
+        setIsPro(true);
+        // Pulisce l'URL per togliere "?payment=success"
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else {
+        // Altrimenti controllo lo stato salvato
+        const proStatus = await licenseService.isUserPro();
+        setIsPro(proStatus);
+      }
       
       audioEngineRef.current = new AudioEngine((midi, name) => {
         setCurrentNote(name);
@@ -57,7 +67,7 @@ const App: React.FC = () => {
         await audioEngineRef.current?.startMic('recording');
         setAppState('recording');
       } catch (e) {
-        alert("Accesso al microfono richiesto per convertire la voce.");
+        alert("Accesso al microfono richiesto.");
       }
     }
   };
@@ -79,10 +89,8 @@ const App: React.FC = () => {
   const handleExport = () => {
     if (!isPro) { setShowSalesPage(true); return; }
     if (lastSequence.length === 0) { alert("Registra una melodia prima di esportare."); return; }
-    
     const currentInst = INSTRUMENTS.find(i => i.id === selectedInstrument);
     const midiProgram = currentInst?.midiProgram || 0;
-    
     const blob = exportMidi(lastSequence, midiProgram);
     downloadBlob(blob, `vocal_synth_${Date.now()}.mid`);
   };
@@ -105,15 +113,14 @@ const App: React.FC = () => {
         <ProLanding 
           onClose={() => setShowSalesPage(false)} 
           onUpgrade={() => {
-            licenseService.activatePro();
-            setIsPro(true);
-            setShowSalesPage(false);
+            // COLLEGAMENTO A STRIPE
+            window.location.href = 'https://buy.stripe.com/9B68wQ9EaaU7cW13C7frW01';
           }} 
         />
       )}
       
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-8 py-8 space-y-8 pb-32">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center glass p-6 rounded-[2rem] border-white/5 gap-4 shadow-2xl">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center glass p-6 rounded-[2rem] border-white/5 gap-4">
           <div className="flex items-center gap-4">
              <div className="p-3 bg-purple-500/10 rounded-2xl border border-purple-500/20">
                <Activity className="w-6 h-6 text-purple-500" />
@@ -123,7 +130,7 @@ const App: React.FC = () => {
                <div className="flex items-center gap-2 mt-1">
                  <div className={`w-2 h-2 rounded-full ${appState !== 'idle' ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`} />
                  <span className="text-[10px] font-bold opacity-40 uppercase tracking-tighter">
-                   {appState === 'recording' ? 'Registrazione Attiva' : appState === 'live' ? 'Live Monitor Attivo' : 'In attesa'}
+                   {appState === 'recording' ? 'Registrazione' : appState === 'live' ? 'Live' : 'Pronto'}
                  </span>
                </div>
              </div>
@@ -131,11 +138,11 @@ const App: React.FC = () => {
           
           <div className="flex items-center gap-4">
             <div className="flex flex-col items-end mr-4">
-              <span className="text-[9px] font-black opacity-30 uppercase mb-1">Octave Shift</span>
+              <span className="text-[9px] font-black opacity-30 uppercase mb-1">Octave</span>
               <div className="flex items-center gap-2 bg-white/5 rounded-xl p-1 border border-white/5">
-                <button onClick={() => handleOctaveChange(-1)} className="p-1 hover:bg-white/10 rounded-lg"><ChevronDown className="w-4 h-4" /></button>
-                <span className="text-xs font-black min-w-[20px] text-center">{octaveShift > 0 ? `+${octaveShift}` : octaveShift}</span>
-                <button onClick={() => handleOctaveChange(1)} className="p-1 hover:bg-white/10 rounded-lg"><ChevronUp className="w-4 h-4" /></button>
+                <button onClick={() => handleOctaveChange(-1)} className="p-1"><ChevronDown className="w-4 h-4" /></button>
+                <span className="text-xs font-black">{octaveShift}</span>
+                <button onClick={() => handleOctaveChange(1)} className="p-1"><ChevronUp className="w-4 h-4" /></button>
               </div>
             </div>
           </div>
@@ -144,110 +151,47 @@ const App: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           <div className="lg:col-span-8 space-y-6">
             <Visualizer analyser={audioEngineRef.current?.getAnalyser() || null} isActive={appState !== 'idle'} activeColor={activeColor} />
-            
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <button 
-                onClick={handleRec} 
-                className={`p-8 rounded-[2.5rem] border transition-all flex flex-col items-center justify-center gap-3 group relative overflow-hidden ${
-                  appState === 'recording' 
-                    ? 'bg-red-500/10 border-red-500/40' 
-                    : 'bg-white/5 border-white/5 hover:border-white/10'
-                }`}
-              >
-                {appState === 'recording' ? (
-                  <Square className="w-8 h-8 text-red-500 fill-red-500" />
-                ) : (
-                  <Mic className="w-8 h-8 text-white group-hover:scale-110 transition-transform" />
-                )}
-                <span className="text-[9px] font-black uppercase tracking-widest opacity-50">
-                  {appState === 'recording' ? 'Ferma' : 'Registra'}
-                </span>
+              <button onClick={handleRec} className={`p-8 rounded-[2.5rem] border transition-all flex flex-col items-center justify-center gap-3 ${appState === 'recording' ? 'bg-red-500/10 border-red-500/40' : 'bg-white/5 border-white/5'}`}>
+                {appState === 'recording' ? <Square className="w-8 h-8 text-red-500" /> : <Mic className="w-8 h-8 text-white" />}
+                <span className="text-[9px] font-black uppercase opacity-50">Registra</span>
               </button>
-
-              <button 
-                onClick={handleLiveMode} 
-                className={`p-8 rounded-[2.5rem] border transition-all flex flex-col items-center justify-center gap-3 group relative overflow-hidden ${
-                  appState === 'live' 
-                    ? 'bg-purple-500/10 border-purple-500/40' 
-                    : 'bg-white/5 border-white/5 hover:border-white/10'
-                }`}
-              >
-                <Sliders className={`w-8 h-8 ${appState === 'live' ? 'text-purple-500' : 'text-white'} group-hover:scale-110 transition-transform`} />
-                <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Live Monitor</span>
+              <button onClick={handleLiveMode} className={`p-8 rounded-[2.5rem] border transition-all flex flex-col items-center justify-center gap-3 ${appState === 'live' ? 'bg-purple-500/10 border-purple-500/40' : 'bg-white/5 border-white/5'}`}>
+                <Sliders className={`w-8 h-8 ${appState === 'live' ? 'text-purple-500' : 'text-white'}`} />
+                <span className="text-[9px] font-black uppercase opacity-50">Live</span>
               </button>
-
-              <button 
-                onClick={handleExport} 
-                className="p-8 rounded-[2.5rem] bg-white/5 border border-white/5 hover:border-white/10 flex flex-col items-center justify-center gap-3 relative transition-all group"
-              >
+              <button onClick={handleExport} className="p-8 rounded-[2.5rem] bg-white/5 border border-white/5 flex flex-col items-center justify-center gap-3 relative">
                 {!isPro && <Lock className="absolute top-6 right-8 w-3 h-3 text-amber-500" />}
-                <Save className="w-8 h-8 text-white group-hover:scale-110 transition-transform" />
-                <span className="text-[9px] font-black uppercase tracking-widest opacity-50">Esporta MIDI</span>
+                <Save className="w-8 h-8 text-white" />
+                <span className="text-[9px] font-black uppercase opacity-50">Esporta</span>
               </button>
             </div>
-
             <MidiKeyboard activeMidi={activeMidi} activeColor={activeColor} />
           </div>
 
-          <aside className="lg:col-span-4 glass p-8 rounded-[3rem] flex flex-col items-center justify-center text-center border-white/5 relative shadow-inner h-full min-h-[400px]">
-             <div className="absolute top-8 left-10 flex items-center gap-2 opacity-20">
-               <Settings2 className="w-4 h-4" />
-               <span className="text-[8px] font-black uppercase tracking-widest">Pitch Tracker</span>
+          <aside className="lg:col-span-4 glass p-8 rounded-[3rem] flex flex-col items-center justify-center text-center border-white/5 relative h-full min-h-[400px]">
+             <div className="text-[140px] font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white to-white/10">
+               {currentNote || '--'}
              </div>
-             
-             <div className="relative">
-                <div className="text-[140px] font-black tracking-tighter leading-none text-transparent bg-clip-text bg-gradient-to-b from-white to-white/10">
-                  {currentNote || '--'}
-                </div>
-                {activeMidi && (
-                   <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-purple-400 font-mono text-xs font-bold">
-                     {activeMidi}
-                   </div>
-                )}
-             </div>
-
              <div className="mt-12 w-full space-y-4">
-               <div className="px-4 py-2 bg-purple-500/10 border border-purple-500/20 rounded-full inline-block">
-                 <span className="text-[9px] font-black text-purple-400 uppercase tracking-[0.4em]">Engine Precision High</span>
-               </div>
-               
                <div className="pt-8 space-y-4">
-                 <div className="flex justify-between items-center text-[8px] font-black uppercase tracking-widest opacity-30">
-                   <span>Sensitivity</span>
-                   <span>{Math.round(sensitivity * 1000)}ms</span>
-                 </div>
-                 <input 
-                   type="range" 
-                   min="0.001" 
-                   max="0.05" 
-                   step="0.001" 
-                   value={sensitivity}
-                   onChange={(e) => {
+                 <input type="range" min="0.001" max="0.05" step="0.001" value={sensitivity} onChange={(e) => {
                      const val = parseFloat(e.target.value);
                      setSensitivity(val);
                      audioEngineRef.current?.setSensitivity(val);
-                   }}
-                   className="w-full accent-purple-500 bg-white/5 h-1 rounded-full appearance-none"
-                 />
+                   }} className="w-full accent-purple-500" />
                </div>
              </div>
           </aside>
         </div>
 
         <div className="space-y-6">
-          <div className="flex items-center justify-between px-2">
-            <h2 className="text-[11px] font-black uppercase tracking-[0.5em] text-white/30">Libreria Strumenti</h2>
-            {isPro && <span className="text-[9px] font-black text-amber-500 uppercase flex items-center gap-2"><Crown className="w-3 h-3"/> PRO Unlocked</span>}
-          </div>
           <InstrumentGrid 
             selectedId={selectedInstrument} 
             isLoading={isLoadingInstrument}
             onSelect={async (id: string) => {
               const inst = INSTRUMENTS.find(i => i.id === id);
-              if (inst?.isPro && !isPro) {
-                setShowSalesPage(true);
-                return;
-              }
+              if (inst?.isPro && !isPro) { setShowSalesPage(true); return; }
               setSelectedInstrument(id);
               setIsLoadingInstrument(true);
               await audioEngineRef.current?.loadInstrument(id);
