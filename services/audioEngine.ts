@@ -13,7 +13,6 @@ export class AudioEngine {
   private sequence: RecordedNote[] = [];
   private recordingStart: number = 0;
   private lastNoteStart: number = 0;
-  private currentTrajectory: PitchPoint[] = [];
   private silentFramesCounter: number = 0;
   private readonly MAX_SILENT_FRAMES = 8; 
 
@@ -25,7 +24,7 @@ export class AudioEngine {
   private readonly BUFFER_SIZE = 3; 
 
   private octaveShift: number = 0; 
-  private sensitivity: number = 0.01;
+  private sensitivity: number = 0.002;
 
   private onNoteUpdate: (note: number | null, name: string | null) => void;
 
@@ -33,13 +32,8 @@ export class AudioEngine {
     this.onNoteUpdate = onNoteUpdate;
   }
 
-  setOctaveShift(shift: number) {
-    this.octaveShift = shift;
-  }
-
-  setSensitivity(val: number) {
-    this.sensitivity = val;
-  }
+  setOctaveShift(shift: number) { this.octaveShift = shift; }
+  setSensitivity(val: number) { this.sensitivity = val; }
 
   private initAudio() {
     if (!this.audioCtx) {
@@ -54,14 +48,9 @@ export class AudioEngine {
 
   async startMic(mode: 'live' | 'recording') {
     this.initAudio();
-    
-    // Fermiamo eventuali processi precedenti prima di iniziare
-    this.isProcessing = false; 
-    
     this.mode = mode;
+    this.isProcessing = true;
     this.silentFramesCounter = 0;
-    this.lastStableMidi = null;
-    this.pitchBuffer = [];
     
     if (mode === 'recording') {
       this.sequence = [];
@@ -71,60 +60,33 @@ export class AudioEngine {
     try {
       if (!this.micStream) {
         this.micStream = await navigator.mediaDevices.getUserMedia({ 
-          audio: { 
-            echoCancellation: true,
-            noiseSuppression: true, 
-            autoGainControl: true 
-          } 
+          audio: { echoCancellation: true, noiseSuppression: true } 
         });
         this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
         this.source.connect(this.analyser!);
       }
+      if (this.audioCtx!.state === 'suspended') await this.audioCtx!.resume();
       
-      if (this.audioCtx!.state === 'suspended') {
-        await this.audioCtx!.resume();
-      }
-
-      this.isProcessing = true;
-      // Avviamo il loop di analisi
       requestAnimationFrame(this.processAudio);
     } catch (err) {
-      console.error("Microphone Access Error:", err);
-      throw err;
+      console.error("Mic Error:", err);
     }
   }
 
   stopMic() {
     this.isProcessing = false;
     this.stopNote();
-    
-    if (this.mode === 'recording' && this.lastStableMidi !== null) {
-      this.closeLastNote();
-    }
-    
+    if (this.mode === 'recording' && this.lastStableMidi !== null) this.closeLastNote();
     this.mode = 'idle';
     this.onNoteUpdate(null, null);
-    
-    if (this.micStream) {
-      this.micStream.getTracks().forEach(track => track.stop());
-      this.micStream = null;
-    }
   }
 
   async playSequence(sequence: RecordedNote[]) {
-    if (!this.instrument || !this.audioCtx || sequence.length === 0) return;
-
-    if (this.audioCtx.state === 'suspended') {
-      await this.audioCtx.resume();
-    }
-
-    this.stopNote(); 
-
+    if (!this.instrument || !this.audioCtx) return;
+    await this.audioCtx.resume();
+    this.stopNote();
     const now = this.audioCtx.currentTime;
-    
     sequence.forEach(note => {
-      // startTime è relativo all'inizio della registrazione, quindi aggiungiamo 'now'
-      // Aggiungiamo 0.1s di buffer per evitare micro-scatti iniziali
       this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration,
         gain: 0.8 
@@ -133,60 +95,42 @@ export class AudioEngine {
   }
 
   private processAudio = () => {
-    // Se isProcessing è false, fermiamo il loop del requestAnimationFrame
     if (!this.isProcessing || !this.analyser || !this.audioCtx) return;
-    
     const buffer = new Float32Array(this.analyser.fftSize);
     this.analyser.getFloatTimeDomainData(buffer);
     
-    // Calcolo Volume (RMS)
     let sum = 0;
     for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
-    const volume = Math.sqrt(sum / buffer.length);
+    // BOOST VOLUME: Moltiplichiamo per 2 per rendere i fischi leggeri più visibili
+    const volume = Math.sqrt(sum / buffer.length) * 2; 
     
     if (volume < this.sensitivity) { 
       this.handleSilence();
     } else {
       const { pitch, clarity } = detectPitch(buffer, this.audioCtx.sampleRate);
-      
-      // clarity > 0.8 indica che il suono è una nota definita e non rumore
-      if (pitch > 0 && clarity > 0.8) { 
+      // CLARITY 0.5: Molto più permissivo per i fischi (meno puri della voce)
+      if (pitch > 0 && clarity > 0.5) { 
         this.silentFramesCounter = 0;
-        
-        // Median Filter (Smooth) per evitare salti di nota improvvisi
         this.pitchBuffer.push(pitch);
         if (this.pitchBuffer.length > this.BUFFER_SIZE) this.pitchBuffer.shift();
         
         const sorted = [...this.pitchBuffer].sort((a, b) => a - b);
         const smoothedPitch = sorted[Math.floor(sorted.length / 2)];
 
-        // Conversione Frequenza -> MIDI
         let midiFloat = 12 * (Math.log2(smoothedPitch / 440)) + 69;
         midiFloat += (this.octaveShift * 12);
-
-        const midiRounded = Math.round(midiFloat);
-        this.handlePitchDetection(midiRounded);
+        this.handlePitchDetection(Math.round(midiFloat));
       } else {
         this.handleSilence();
       }
     }
-
-    // Continua il loop
-    requestAnimationFrame(this.processAudio);
+    if (this.isProcessing) requestAnimationFrame(this.processAudio);
   };
 
   private handlePitchDetection(midi: number) {
     if (this.lastStableMidi !== midi) {
-      // Se stiamo registrando, chiudiamo la nota precedente e iniziamo la nuova
-      if (this.mode === 'recording') {
-        this.recordNoteChange(midi);
-      }
-      
-      // In modalità Live, facciamo suonare lo strumento in tempo reale
-      if (this.mode === 'live') {
-        this.playNote(midi);
-      }
-      
+      if (this.mode === 'recording') this.recordNoteChange(midi);
+      if (this.mode === 'live') this.playNote(midi);
       this.lastStableMidi = midi;
       this.onNoteUpdate(midi, midiToNoteName(midi));
     }
@@ -194,30 +138,22 @@ export class AudioEngine {
 
   private handleSilence() {
     this.silentFramesCounter++;
-    // Se il silenzio dura più di MAX_SILENT_FRAMES, interrompiamo la nota
     if (this.silentFramesCounter > this.MAX_SILENT_FRAMES) {
       this.stopNote();
-      if (this.mode === 'recording' && this.lastStableMidi !== null) {
-        this.closeLastNote();
-      }
+      if (this.mode === 'recording' && this.lastStableMidi !== null) this.closeLastNote();
       this.lastStableMidi = null;
       this.onNoteUpdate(null, null);
     }
   }
 
   private recordNoteChange(midi: number) {
-    if (this.lastStableMidi !== null) {
-      this.closeLastNote();
-    }
+    if (this.lastStableMidi !== null) this.closeLastNote();
     this.lastNoteStart = this.audioCtx!.currentTime;
   }
 
   private closeLastNote() {
-    if (this.lastStableMidi === null || !this.audioCtx) return;
-    const now = this.audioCtx.currentTime;
-    const duration = now - this.lastNoteStart;
-    
-    // Salviamo la nota solo se ha una durata minima (evita glitch)
+    if (this.lastStableMidi === null) return;
+    const duration = this.audioCtx!.currentTime - this.lastNoteStart;
     if (duration >= this.MIN_NOTE_DURATION) {
       this.sequence.push({ 
         midi: this.lastStableMidi, 
@@ -229,51 +165,37 @@ export class AudioEngine {
   }
 
   private playNote(midi: number) {
-    if (!this.instrument || !this.audioCtx) return;
-    this.stopNote(); // Ferma la nota live precedente
-    this.activeLiveNote = this.instrument.play(midi, this.audioCtx.currentTime, { gain: 0.8 });
+    if (!this.instrument) return;
+    this.stopNote();
+    this.activeLiveNote = this.instrument.play(midi, this.audioCtx!.currentTime, { gain: 0.8 });
   }
 
   private stopNote() {
     if (this.activeLiveNote) {
-      try {
-        if (typeof this.activeLiveNote.stop === 'function') {
-          this.activeLiveNote.stop(this.audioCtx!.currentTime);
-        }
-      } catch (e) {
-        // Silenzia errori se la nota è già terminata
-      }
+      try { this.activeLiveNote.stop(); } catch(e) {}
       this.activeLiveNote = null;
     }
   }
 
   async loadInstrument(instrumentId: string) {
     this.initAudio();
-    if (!(window as any).Soundfont) {
-      await this.loadScript('https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js');
-    }
-    const Soundfont = (window as any).Soundfont;
+    if (!(window as any).Soundfont) await this.loadScript('https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js');
     try {
-      // Carichiamo lo strumento usando il set FluidR3_GM
-      this.instrument = await Soundfont.instrument(this.audioCtx!, instrumentId, { soundfont: 'FluidR3_GM' });
+      this.instrument = await (window as any).Soundfont.instrument(this.audioCtx!, instrumentId, { soundfont: 'FluidR3_GM' });
       return true;
-    } catch (err) {
-      console.error("Error loading instrument", err);
-      return false;
-    }
+    } catch (err) { return false; }
   }
 
   private loadScript(src: string): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       if (document.querySelector(`script[src="${src}"]`)) return resolve();
       const script = document.createElement('script');
       script.src = src;
       script.onload = () => resolve();
-      script.onerror = () => reject();
       document.head.appendChild(script);
     });
   }
 
   getAnalyser() { return this.analyser; }
-  getSequence() { return [...this.sequence]; } 
+  getSequence() { return [...this.sequence]; }
 }
