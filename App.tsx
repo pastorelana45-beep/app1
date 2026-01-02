@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Visualizer } from './components/Visualizer';
@@ -10,9 +9,8 @@ import { licenseService } from './services/licenseService';
 import { RecordedNote } from './types';
 import { INSTRUMENTS } from './constants';
 import { exportMidi, downloadBlob } from './services/midiExport';
-import { downloadProjectZip } from './services/projectExporter';
 import { 
-  Mic, Square, Lock, FolderArchive, Save, Crown, Activity, Settings2, Sliders, ChevronUp, ChevronDown
+  Mic, Square, Lock, Save, Crown, Activity, Settings2, Sliders, ChevronUp, ChevronDown
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -46,7 +44,7 @@ const App: React.FC = () => {
     init();
 
     return () => audioEngineRef.current?.stopMic();
-  }, []);
+  }, [selectedInstrument]);
 
   const handleRec = async () => {
     if (appState === 'recording') {
@@ -115,7 +113,6 @@ const App: React.FC = () => {
       )}
       
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-8 py-8 space-y-8 pb-32">
-        {/* Status Bar */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center glass p-6 rounded-[2rem] border-white/5 gap-4 shadow-2xl">
           <div className="flex items-center gap-4">
              <div className="p-3 bg-purple-500/10 rounded-2xl border border-purple-500/20">
@@ -141,12 +138,6 @@ const App: React.FC = () => {
                 <button onClick={() => handleOctaveChange(1)} className="p-1 hover:bg-white/10 rounded-lg"><ChevronUp className="w-4 h-4" /></button>
               </div>
             </div>
-            <button 
-              onClick={downloadProjectZip}
-              className="flex items-center gap-2 px-6 py-3 bg-zinc-900 hover:bg-zinc-800 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border border-white/5 active:scale-95 shadow-lg"
-            >
-              <FolderArchive className="w-4 h-4" /> Download Source
-            </button>
           </div>
         </div>
 
@@ -159,7 +150,7 @@ const App: React.FC = () => {
                 onClick={handleRec} 
                 className={`p-8 rounded-[2.5rem] border transition-all flex flex-col items-center justify-center gap-3 group relative overflow-hidden ${
                   appState === 'recording' 
-                    ? 'bg-red-500/10 border-red-500/40 active-glow' 
+                    ? 'bg-red-500/10 border-red-500/40' 
                     : 'bg-white/5 border-white/5 hover:border-white/10'
                 }`}
               >
@@ -177,7 +168,7 @@ const App: React.FC = () => {
                 onClick={handleLiveMode} 
                 className={`p-8 rounded-[2.5rem] border transition-all flex flex-col items-center justify-center gap-3 group relative overflow-hidden ${
                   appState === 'live' 
-                    ? 'bg-purple-500/10 border-purple-500/40 active-glow' 
+                    ? 'bg-purple-500/10 border-purple-500/40' 
                     : 'bg-white/5 border-white/5 hover:border-white/10'
                 }`}
               >
