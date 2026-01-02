@@ -1,4 +1,3 @@
-
 import { detectPitch, midiToNoteName } from './pitchDetection';
 import { RecordedNote, PitchPoint } from '../types';
 
@@ -137,9 +136,12 @@ export class AudioEngine {
       if (this.mode === 'recording') {
         this.recordNoteChange(midi);
       }
-      if (this.mode === 'live' || this.mode === 'recording') {
+      
+      // CORREZIONE: Suona la nota solo se siamo effettivamente in modalità LIVE
+      if (this.mode === 'live') {
         this.playNote(midi);
       }
+      
       this.lastStableMidi = midi;
       this.onNoteUpdate(midi, midiToNoteName(midi));
     }
