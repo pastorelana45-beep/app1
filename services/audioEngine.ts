@@ -97,6 +97,19 @@ export class AudioEngine {
     }
   }
 
+  // --- NUOVA FUNZIONE PER RIPRODURRE LA REGISTRAZIONE ---
+  playSequence(sequence: RecordedNote[]) {
+    if (!this.instrument || !this.audioCtx) return;
+    const now = this.audioCtx.currentTime;
+    
+    sequence.forEach(note => {
+      this.instrument.play(note.midi, now + note.startTime, { 
+        duration: note.duration,
+        gain: 0.8 
+      });
+    });
+  }
+
   private processAudio = () => {
     if (!this.isProcessing || !this.analyser || !this.audioCtx) return;
     const buffer = new Float32Array(this.analyser.fftSize);
@@ -137,7 +150,7 @@ export class AudioEngine {
         this.recordNoteChange(midi);
       }
       
-      // CORREZIONE: Suona la nota solo se siamo effettivamente in modalità LIVE
+      // SUONA SOLO SE IN LIVE (Bug corretto)
       if (this.mode === 'live') {
         this.playNote(midi);
       }
