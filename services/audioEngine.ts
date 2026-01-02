@@ -54,6 +54,10 @@ export class AudioEngine {
 
   async startMic(mode: 'live' | 'recording') {
     this.initAudio();
+    
+    // Fermiamo eventuali processi precedenti prima di iniziare
+    this.isProcessing = false; 
+    
     this.mode = mode;
     this.silentFramesCounter = 0;
     this.lastStableMidi = null;
@@ -76,9 +80,14 @@ export class AudioEngine {
         this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
         this.source.connect(this.analyser!);
       }
-      if (this.audioCtx!.state === 'suspended') await this.audioCtx!.resume();
+      
+      if (this.audioCtx!.state === 'suspended') {
+        await this.audioCtx!.resume();
+      }
+
       this.isProcessing = true;
-      this.processAudio();
+      // Avviamo il loop di analisi
+      requestAnimationFrame(this.processAudio);
     } catch (err) {
       console.error("Microphone Access Error:", err);
       throw err;
@@ -88,30 +97,34 @@ export class AudioEngine {
   stopMic() {
     this.isProcessing = false;
     this.stopNote();
-    if (this.mode === 'recording' && this.lastStableMidi !== null) this.closeLastNote();
+    
+    if (this.mode === 'recording' && this.lastStableMidi !== null) {
+      this.closeLastNote();
+    }
+    
     this.mode = 'idle';
     this.onNoteUpdate(null, null);
+    
     if (this.micStream) {
       this.micStream.getTracks().forEach(track => track.stop());
       this.micStream = null;
     }
   }
 
-  // --- FUNZIONE PLAY AGGIORNATA E POTENZIATA ---
   async playSequence(sequence: RecordedNote[]) {
     if (!this.instrument || !this.audioCtx || sequence.length === 0) return;
 
-    // Riattiva l'audio se il browser lo ha messo in pausa
     if (this.audioCtx.state === 'suspended') {
       await this.audioCtx.resume();
     }
 
-    this.stopNote(); // Ferma note che suonano ancora
+    this.stopNote(); 
 
     const now = this.audioCtx.currentTime;
     
     sequence.forEach(note => {
-      // Aggiungiamo un piccolo ritardo di 0.1s per sincronizzare il processore audio
+      // startTime è relativo all'inizio della registrazione, quindi aggiungiamo 'now'
+      // Aggiungiamo 0.1s di buffer per evitare micro-scatti iniziali
       this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration,
         gain: 0.8 
@@ -120,10 +133,13 @@ export class AudioEngine {
   }
 
   private processAudio = () => {
+    // Se isProcessing è false, fermiamo il loop del requestAnimationFrame
     if (!this.isProcessing || !this.analyser || !this.audioCtx) return;
+    
     const buffer = new Float32Array(this.analyser.fftSize);
     this.analyser.getFloatTimeDomainData(buffer);
     
+    // Calcolo Volume (RMS)
     let sum = 0;
     for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
     const volume = Math.sqrt(sum / buffer.length);
@@ -132,15 +148,19 @@ export class AudioEngine {
       this.handleSilence();
     } else {
       const { pitch, clarity } = detectPitch(buffer, this.audioCtx.sampleRate);
+      
+      // clarity > 0.8 indica che il suono è una nota definita e non rumore
       if (pitch > 0 && clarity > 0.8) { 
         this.silentFramesCounter = 0;
         
+        // Median Filter (Smooth) per evitare salti di nota improvvisi
         this.pitchBuffer.push(pitch);
         if (this.pitchBuffer.length > this.BUFFER_SIZE) this.pitchBuffer.shift();
         
         const sorted = [...this.pitchBuffer].sort((a, b) => a - b);
         const smoothedPitch = sorted[Math.floor(sorted.length / 2)];
 
+        // Conversione Frequenza -> MIDI
         let midiFloat = 12 * (Math.log2(smoothedPitch / 440)) + 69;
         midiFloat += (this.octaveShift * 12);
 
@@ -150,16 +170,19 @@ export class AudioEngine {
         this.handleSilence();
       }
     }
-    if (this.isProcessing) requestAnimationFrame(this.processAudio);
+
+    // Continua il loop
+    requestAnimationFrame(this.processAudio);
   };
 
   private handlePitchDetection(midi: number) {
     if (this.lastStableMidi !== midi) {
+      // Se stiamo registrando, chiudiamo la nota precedente e iniziamo la nuova
       if (this.mode === 'recording') {
         this.recordNoteChange(midi);
       }
       
-      // SUONA SOLO IN MODALITÀ LIVE
+      // In modalità Live, facciamo suonare lo strumento in tempo reale
       if (this.mode === 'live') {
         this.playNote(midi);
       }
@@ -171,6 +194,7 @@ export class AudioEngine {
 
   private handleSilence() {
     this.silentFramesCounter++;
+    // Se il silenzio dura più di MAX_SILENT_FRAMES, interrompiamo la nota
     if (this.silentFramesCounter > this.MAX_SILENT_FRAMES) {
       this.stopNote();
       if (this.mode === 'recording' && this.lastStableMidi !== null) {
@@ -193,6 +217,7 @@ export class AudioEngine {
     const now = this.audioCtx.currentTime;
     const duration = now - this.lastNoteStart;
     
+    // Salviamo la nota solo se ha una durata minima (evita glitch)
     if (duration >= this.MIN_NOTE_DURATION) {
       this.sequence.push({ 
         midi: this.lastStableMidi, 
@@ -205,14 +230,18 @@ export class AudioEngine {
 
   private playNote(midi: number) {
     if (!this.instrument || !this.audioCtx) return;
-    this.stopNote();
+    this.stopNote(); // Ferma la nota live precedente
     this.activeLiveNote = this.instrument.play(midi, this.audioCtx.currentTime, { gain: 0.8 });
   }
 
   private stopNote() {
     if (this.activeLiveNote) {
-      if (typeof this.activeLiveNote.stop === 'function') {
-        this.activeLiveNote.stop(this.audioCtx!.currentTime);
+      try {
+        if (typeof this.activeLiveNote.stop === 'function') {
+          this.activeLiveNote.stop(this.audioCtx!.currentTime);
+        }
+      } catch (e) {
+        // Silenzia errori se la nota è già terminata
       }
       this.activeLiveNote = null;
     }
@@ -225,6 +254,7 @@ export class AudioEngine {
     }
     const Soundfont = (window as any).Soundfont;
     try {
+      // Carichiamo lo strumento usando il set FluidR3_GM
       this.instrument = await Soundfont.instrument(this.audioCtx!, instrumentId, { soundfont: 'FluidR3_GM' });
       return true;
     } catch (err) {
@@ -235,6 +265,7 @@ export class AudioEngine {
 
   private loadScript(src: string): Promise<void> {
     return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) return resolve();
       const script = document.createElement('script');
       script.src = src;
       script.onload = () => resolve();
@@ -244,5 +275,5 @@ export class AudioEngine {
   }
 
   getAnalyser() { return this.analyser; }
-  getSequence() { return [...this.sequence]; } // Cloniamo la sequenza per sicurezza
+  getSequence() { return [...this.sequence]; } 
 }
