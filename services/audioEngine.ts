@@ -39,7 +39,6 @@ export class AudioEngine {
     if (!this.audioCtx) {
       this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
         sampleRate: 44100,
-        // 'playback' aiuta a far capire ad Android che non è una chiamata interattiva
         latencyHint: 'playback' 
       });
       this.analyser = this.audioCtx.createAnalyser();
@@ -61,7 +60,6 @@ export class AudioEngine {
 
     try {
       if (!this.micStream) {
-        // Disattiviamo i filtri che forzano la modalità "Comunicazione"
         this.micStream = await navigator.mediaDevices.getUserMedia({ 
           audio: { 
             echoCancellation: false, 
@@ -70,7 +68,6 @@ export class AudioEngine {
           } 
         });
 
-        // Forza la destinazione audio su quella multimediale predefinita
         if ((this.audioCtx as any).setSinkId) {
           (this.audioCtx as any).setSinkId("");
         }
@@ -88,18 +85,23 @@ export class AudioEngine {
     }
   }
 
+  // FUNZIONE STOP POTENZIATA PER RILASCIARE IL BLUETOOTH
   stopMic() {
     this.isProcessing = false;
     this.stopNote();
-    if (this.mode === 'recording' && this.lastStableMidi !== null) this.closeLastNote();
+    
+    if (this.mode === 'recording' && this.lastStableMidi !== null) {
+      this.closeLastNote();
+    }
+    
     this.mode = 'idle';
     this.onNoteUpdate(null, null);
 
-    // IMPORTANTE: Spegnimento totale del microfono per rilasciare il canale "Telefono"
+    // DISTRUZIONE FISICA DEL CANALE AUDIO
     if (this.micStream) {
       this.micStream.getTracks().forEach(track => {
-        track.stop();
-        track.enabled = false;
+        track.stop(); // Ferma la cattura
+        track.enabled = false; // Disabilita la traccia
       });
       this.micStream = null;
       this.source = null;
@@ -109,20 +111,21 @@ export class AudioEngine {
   async playSequence(sequence: RecordedNote[]) {
     if (!this.instrument || !this.audioCtx || !sequence || sequence.length === 0) return;
     
-    // Assicuriamoci che il microfono sia spento prima di riprodurre per tornare in modalità Multimedia
-    if (this.mode === 'idle') {
-      this.stopMic(); 
-    }
+    // FORZIAMO LO STOP DEL MICROFONO PRIMA DEL PLAY
+    // Questo serve a resettare il driver audio di Android da "Call" a "Media"
+    this.stopMic();
 
-    if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+    if (this.audioCtx.state === 'suspended') {
+      await this.audioCtx.resume();
+    }
     
     this.stopNote();
     const now = this.audioCtx.currentTime;
     
     sequence.forEach(note => {
-      this.instrument.play(note.midi, now + note.startTime + 0.05, { 
+      this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration,
-        gain: 0.8 
+        gain: 1.0 
       });
     });
   }
