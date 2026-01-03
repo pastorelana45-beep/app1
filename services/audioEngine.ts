@@ -16,88 +16,61 @@ export class AudioEngine {
   private octaveShift: number = 0;
   private sensitivity: number = 0.01;
   private onNoteUpdate: (note: number | null, name: string | null) => void;
-  private currentInstrumentId: string = 'acoustic_grand_piano';
 
   constructor(onNoteUpdate: (note: number | null, name: string | null) => void) {
     this.onNoteUpdate = onNoteUpdate;
   }
 
-  setOctaveShift(s: number) { this.octaveShift = s; }
-  setSensitivity(v: number) { this.sensitivity = v; }
-
   private async initAudio() {
     if (this.audioCtx) return;
-
     this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
       sampleRate: 44100,
-      latencyHint: 'playback' // Indica al sistema che vogliamo qualità musica, non chiamata
+      latencyHint: 'playback' // Cruciale: dice ad Android "sono un player musicale"
     });
-
-    // TRUCCO PER ANDROID: Forza l'output sulla cassa predefinita (Multimedia)
-    if ((this.audioCtx as any).setSinkId) {
-      try { await (this.audioCtx as any).setSinkId(""); } catch(e) {}
-    }
-
     this.analyser = this.audioCtx.createAnalyser();
     this.analyser.fftSize = 2048;
-    await this.loadInstrument(this.currentInstrumentId);
   }
 
   async startMic(mode: 'live' | 'recording') {
     await this.initAudio();
     this.mode = mode;
     this.lastStableMidi = null;
-    if (mode === 'recording') this.sequence = [];
 
     try {
-      const constraints = {
+      // SETTAGGI "YOUTUBE-STYLE" PER IL MICROFONO
+      // Disabilitando questi 3, Android spesso evita di attivare la modalità chiamata
+      this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
+          echoCancellation: false, 
+          noiseSuppression: false, 
           autoGainControl: false,
-          // Evita che il browser usi il profilo comunicazione
-          googEchoCancellation: false,
-          googAutoGainControl: false,
-          googNoiseSuppression: false,
-        } as any
-      };
+        }
+      });
 
-      this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
       this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
       this.source.connect(this.analyser!);
       
-      if (this.audioCtx!.state === 'suspended') await this.audioCtx!.resume();
-      
-      this.recordingStart = this.audioCtx!.currentTime;
       this.isProcessing = true;
+      this.recordingStart = this.audioCtx!.currentTime;
       this.process();
     } catch (e) {
-      console.error("Microfono negato:", e);
-      throw e;
+      console.error("Microfono bloccato");
     }
   }
 
-  /**
-   * STOP DEFINITIVO: Spegne tutto per liberare la cassa Bluetooth
-   */
+  // QUESTA FUNZIONE È QUELLA CHE SBLOCCA LA CASSA
   async stopMic() {
     this.isProcessing = false;
     this.mode = 'idle';
 
     if (this.micStream) {
       this.micStream.getTracks().forEach(track => {
-        track.stop(); // Spegne fisicamente il microfono
-        track.enabled = false;
+        track.stop(); // SPEGNE IL MICROFONO FISICAMENTE
       });
       this.micStream = null;
     }
 
-    if (this.activeLiveNote) {
-      try { this.activeLiveNote.stop(); } catch(e) {}
-      this.activeLiveNote = null;
-    }
-
-    // RESET DEL CONTESTO: L'unico modo per far sparire la cornetta telefonica su Android
+    // KILLIAMO IL CONTESTO: Se non lo facciamo, Android resta in modalità chiamata
     if (this.audioCtx) {
       await this.audioCtx.close();
       this.audioCtx = null;
@@ -108,7 +81,7 @@ export class AudioEngine {
   }
 
   async previewSequence() {
-    // Prima di suonare, chiudiamo tutto per assicurarci che la "chiamata" finisca
+    // Prima di suonare, resettiamo tutto per tornare in modalità "Musica/YouTube"
     await this.stopMic();
     await this.initAudio();
 
@@ -118,7 +91,7 @@ export class AudioEngine {
     this.sequence.forEach(note => {
       this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration, 
-        gain: 1.2 // Alziamo il volume per il canale multimedia
+        gain: 1.0 
       });
     });
   }
@@ -129,11 +102,7 @@ export class AudioEngine {
     this.analyser.getFloatTimeDomainData(buf);
     const { pitch, clarity } = detectPitch(buf, this.audioCtx.sampleRate);
     
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-    const volume = Math.sqrt(sum / buf.length);
-
-    if (pitch > 0 && clarity > 0.85 && volume > this.sensitivity) {
+    if (pitch > 0 && clarity > 0.85) {
       let midi = Math.round(12 * Math.log2(pitch / 440) + 69) + (this.octaveShift * 12);
       if (midi !== this.lastStableMidi) {
         this.playNote(midi);
@@ -160,7 +129,6 @@ export class AudioEngine {
   }
 
   async loadInstrument(instrumentId: string) {
-    this.currentInstrumentId = instrumentId;
     if (!this.audioCtx) await this.initAudio();
     if (!(window as any).Soundfont) {
       await this.loadScript('https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js');
@@ -173,13 +141,14 @@ export class AudioEngine {
 
   private loadScript(src: string): Promise<void> {
     return new Promise((res) => {
-      if (document.querySelector(`script[src="${src}"]`)) return res(true);
       const s = document.createElement('script');
-      s.src = src; s.onload = () => res(true);
+      s.src = src; s.onload = () => res();
       document.head.appendChild(s);
     });
   }
 
   getAnalyser() { return this.analyser; }
   getSequence() { return this.sequence; }
+  setOctaveShift(s: number) { this.octaveShift = s; }
+  setSensitivity(v: number) { this.sensitivity = v; }
 }
