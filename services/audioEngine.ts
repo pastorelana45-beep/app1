@@ -17,38 +17,62 @@ export class AudioEngine {
   private sensitivity: number = 0.01;
   private onNoteUpdate: (note: number | null, name: string | null) => void;
 
-  // --- SEPARATORE DI CANALI ---
-  private mediaStreamDest: MediaStreamAudioDestinationNode | null = null;
-  private multimediaOutput: HTMLAudioElement | null = null;
-
   constructor(onNoteUpdate: (note: number | null, name: string | null) => void) {
     this.onNoteUpdate = onNoteUpdate;
   }
 
-  private async initAudio() {
-    if (this.audioCtx) return;
-
-    this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
-      sampleRate: 44100,
-      latencyHint: 'playback' // Forza il profilo Multimedia (YouTube-style)
-    });
-
-    // CREIAMO IL CANALE DI USCITA MULTIMEDIALE SEPARATO
-    this.mediaStreamDest = this.audioCtx.createMediaStreamDestination();
-    this.multimediaOutput = new Audio();
-    this.multimediaOutput.srcObject = this.mediaStreamDest.stream;
+  /**
+   * RESET TOTALE: Questa funzione deve essere chiamata ogni volta che premi STOP.
+   * Distrugge ogni legame con il microfono per forzare Android a tornare in modalità Musica.
+   */
+  async killMicrophone() {
+    this.isProcessing = false;
     
-    // Questo forza Android a usare il cursore "Musica" e non "Chiamata"
-    this.multimediaOutput.play().catch(() => console.log("Richiesta interazione utente"));
+    if (this.micStream) {
+      this.micStream.getTracks().forEach(track => {
+        track.stop(); // Ferma l'hardware
+        track.enabled = false; 
+      });
+      this.micStream = null;
+    }
 
-    this.analyser = this.audioCtx.createAnalyser();
-    this.analyser.fftSize = 2048;
+    if (this.source) {
+      this.source.disconnect();
+      this.source = null;
+    }
+
+    // Chiudere il contesto è l'unico modo per far sparire la cornetta
+    if (this.audioCtx) {
+      await this.audioCtx.close();
+      this.audioCtx = null;
+    }
+    
+    this.analyser = null;
+    this.lastStableMidi = null;
+    this.onNoteUpdate(null, null);
+    console.log("Microfono ucciso. Sistema dovrebbe tornare in modalità Multimedia.");
+  }
+
+  private async initAudio() {
+    if (!this.audioCtx) {
+      this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
+        sampleRate: 44100,
+        latencyHint: 'playback' // Forza qualità YouTube
+      });
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 2048;
+      // Ricarichiamo lo strumento ogni volta che resettiamo il contesto
+      await this.loadInstrument('acoustic_grand_piano'); 
+    }
   }
 
   async startMic(mode: 'live' | 'recording') {
+    // Prima di iniziare, pulizia totale
+    await this.killMicrophone();
     await this.initAudio();
+    
     this.mode = mode;
-    this.lastStableMidi = null;
+    if (mode === 'recording') this.sequence = [];
 
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
@@ -56,12 +80,7 @@ export class AudioEngine {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          // Flag interni per Chromium per evitare il profilo "Voice"
-          googEchoCancellation: false,
-          googAutoGainControl: false,
-          googNoiseSuppression: false,
-          googHighpassFilter: false,
-        } as any
+        }
       });
 
       this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
@@ -71,44 +90,19 @@ export class AudioEngine {
       this.recordingStart = this.audioCtx!.currentTime;
       this.process();
     } catch (e) {
-      console.error("Errore accesso microfono");
+      console.error("Accesso negato");
     }
   }
 
   async stopMic() {
-    this.isProcessing = false;
+    await this.killMicrophone();
     this.mode = 'idle';
-
-    if (this.micStream) {
-      this.micStream.getTracks().forEach(track => track.stop());
-      this.micStream = null;
-    }
-
-    // Chiudiamo il contesto per resettare completamente i driver Bluetooth
-    if (this.audioCtx) {
-      await this.audioCtx.close();
-      this.audioCtx = null;
-    }
-
-    this.onNoteUpdate(null, null);
-    this.lastStableMidi = null;
-  }
-
-  private playNote(midi: number) {
-    if (this.activeLiveNote) try { this.activeLiveNote.stop(); } catch(e) {}
-    
-    if (this.instrument && this.audioCtx) {
-      // MANDIAMO L'AUDIO AL DESTINATION SEPARATO (L'elemento <audio> HTML5)
-      this.activeLiveNote = this.instrument.play(midi, this.audioCtx.currentTime, { 
-        gain: 1.0,
-        destination: this.mediaStreamDest // Cruciale: non va all'uscita standard!
-      });
-    }
   }
 
   async previewSequence() {
-    await this.stopMic(); // Rilascia il microfono
-    await this.initAudio(); // Riapre in modalità YouTube
+    // Fondamentale: Kill del mic prima del play
+    await this.killMicrophone();
+    await this.initAudio();
 
     if (!this.instrument || this.sequence.length === 0 || !this.audioCtx) return;
 
@@ -116,8 +110,7 @@ export class AudioEngine {
     this.sequence.forEach(note => {
       this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration, 
-        gain: 1.0,
-        destination: this.mediaStreamDest 
+        gain: 1.0 
       });
     });
   }
@@ -147,16 +140,20 @@ export class AudioEngine {
     if (this.isProcessing) requestAnimationFrame(this.process);
   }
 
+  private playNote(midi: number) {
+    if (this.activeLiveNote) try { this.activeLiveNote.stop(); } catch(e) {}
+    if (this.instrument && this.audioCtx) {
+      this.activeLiveNote = this.instrument.play(midi, this.audioCtx.currentTime, { gain: 1.0 });
+    }
+  }
+
   async loadInstrument(instrumentId: string) {
     if (!this.audioCtx) await this.initAudio();
     if (!(window as any).Soundfont) {
       await this.loadScript('https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js');
     }
     try {
-      this.instrument = await (window as any).Soundfont.instrument(this.audioCtx!, instrumentId, { 
-        soundfont: 'FluidR3_GM',
-        destination: this.mediaStreamDest // Colleghiamo lo strumento al canale multimedia
-      });
+      this.instrument = await (window as any).Soundfont.instrument(this.audioCtx!, instrumentId, { soundfont: 'FluidR3_GM' });
       return true;
     } catch (e) { return false; }
   }
