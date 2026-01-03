@@ -39,7 +39,6 @@ export class AudioEngine {
     if (!this.audioCtx) {
       this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
         sampleRate: 44100,
-        // Impostiamo 'playback' per favorire la fedeltà audio rispetto alla bassa latenza da chiamata
         latencyHint: 'playback' 
       });
       this.analyser = this.audioCtx.createAnalyser();
@@ -61,14 +60,24 @@ export class AudioEngine {
 
     try {
       if (!this.micStream) {
-        // MODIFICA CRUCIALE: Disabilitiamo i filtri hardware per evitare la modalità "chiamata"
-        this.micStream = await navigator.mediaDevices.getUserMedia({ 
-          audio: { 
-            echoCancellation: false, 
-            noiseSuppression: false, 
-            autoGainControl: false 
-          } 
-        });
+        // MODIFICHE AI STUDIO: Parametri avanzati per forzare la modalità Multimedia
+        const constraints = {
+          audio: {
+            sampleRate: { ideal: 44100 }, // Forza la qualità CD
+            channelCount: { ideal: 1 },
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            // Flag specifici per Chrome/Chromium (Android)
+            googEchoCancellation: false,
+            googAutoGainControl: false,
+            googNoiseSuppression: false,
+            googHighpassFilter: false,
+            googTypingNoiseDetection: false
+          } as any
+        };
+
+        this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
 
         this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
         this.source.connect(this.analyser!);
@@ -94,7 +103,6 @@ export class AudioEngine {
     this.mode = 'idle';
     this.onNoteUpdate(null, null);
 
-    // Rilasciamo completamente il microfono per far sparire l'icona e sbloccare il Bluetooth
     if (this.micStream) {
       this.micStream.getTracks().forEach(track => {
         track.stop();
@@ -108,7 +116,7 @@ export class AudioEngine {
   async playSequence(sequence: RecordedNote[]) {
     if (!this.instrument || !this.audioCtx || !sequence || sequence.length === 0) return;
     
-    // Assicuriamoci che il microfono sia spento prima del play per tornare in modalità Media
+    // Fermiamo il mic per liberare la modalità "chiamata"
     this.stopMic();
 
     if (this.audioCtx.state === 'suspended') {
@@ -198,9 +206,7 @@ export class AudioEngine {
 
   private stopNote() {
     if (this.activeLiveNote) {
-      try { 
-        this.activeLiveNote.stop(this.audioCtx!.currentTime); 
-      } catch(e) {}
+      try { this.activeLiveNote.stop(this.audioCtx!.currentTime); } catch(e) {}
       this.activeLiveNote = null;
     }
   }
