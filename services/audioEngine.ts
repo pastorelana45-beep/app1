@@ -39,7 +39,8 @@ export class AudioEngine {
     if (!this.audioCtx) {
       this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
         sampleRate: 44100,
-        latencyHint: 'interactive'
+        // 'playback' aiuta a far capire ad Android che non è una chiamata interattiva
+        latencyHint: 'playback' 
       });
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 2048;
@@ -60,7 +61,7 @@ export class AudioEngine {
 
     try {
       if (!this.micStream) {
-        // OTTIMIZZAZIONE: Disattiviamo i filtri "telefonici" per passare a modalità Multimedia
+        // Disattiviamo i filtri che forzano la modalità "Comunicazione"
         this.micStream = await navigator.mediaDevices.getUserMedia({ 
           audio: { 
             echoCancellation: false, 
@@ -68,9 +69,16 @@ export class AudioEngine {
             autoGainControl: false 
           } 
         });
+
+        // Forza la destinazione audio su quella multimediale predefinita
+        if ((this.audioCtx as any).setSinkId) {
+          (this.audioCtx as any).setSinkId("");
+        }
+
         this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
         this.source.connect(this.analyser!);
       }
+      
       if (this.audioCtx!.state === 'suspended') await this.audioCtx!.resume();
       this.isProcessing = true;
       this.processAudio();
@@ -87,9 +95,12 @@ export class AudioEngine {
     this.mode = 'idle';
     this.onNoteUpdate(null, null);
 
-    // SPEGNIMENTO FISICO DEL MICROFONO (Rimuove icona chiamata)
+    // IMPORTANTE: Spegnimento totale del microfono per rilasciare il canale "Telefono"
     if (this.micStream) {
-      this.micStream.getTracks().forEach(track => track.stop());
+      this.micStream.getTracks().forEach(track => {
+        track.stop();
+        track.enabled = false;
+      });
       this.micStream = null;
       this.source = null;
     }
@@ -97,13 +108,18 @@ export class AudioEngine {
 
   async playSequence(sequence: RecordedNote[]) {
     if (!this.instrument || !this.audioCtx || !sequence || sequence.length === 0) return;
+    
+    // Assicuriamoci che il microfono sia spento prima di riprodurre per tornare in modalità Multimedia
+    if (this.mode === 'idle') {
+      this.stopMic(); 
+    }
+
     if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
     
     this.stopNote();
     const now = this.audioCtx.currentTime;
     
     sequence.forEach(note => {
-      // Offset di 0.05 per precisione temporale
       this.instrument.play(note.midi, now + note.startTime + 0.05, { 
         duration: note.duration,
         gain: 0.8 
