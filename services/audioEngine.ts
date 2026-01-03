@@ -2,153 +2,203 @@ import { detectPitch, midiToNoteName } from './pitchDetection.ts';
 import { RecordedNote } from './types.ts';
 
 export class AudioEngine {
-  private audioCtx: AudioContext | null = null;
+  private micCtx: AudioContext | null = null;
+  private playbackCtx: AudioContext | null = null;
+
   private analyser: AnalyserNode | null = null;
   private micStream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+
   private instrument: any = null;
   private isProcessing = false;
   private mode: 'live' | 'recording' | 'idle' = 'idle';
+
   private sequence: RecordedNote[] = [];
-  private recordingStart: number = 0;
+  private recordingStart = 0;
   private lastStableMidi: number | null = null;
   private activeLiveNote: any = null;
-  private octaveShift: number = 0;
-  private sensitivity: number = 0.01;
+
+  private octaveShift = 0;
+  private sensitivity = 0.01;
+
   private onNoteUpdate: (note: number | null, name: string | null) => void;
 
   constructor(onNoteUpdate: (note: number | null, name: string | null) => void) {
     this.onNoteUpdate = onNoteUpdate;
   }
 
-  private async initAudio() {
-    if (this.audioCtx) return;
-    this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
+  /* ================= MICROPHONE CONTEXT ================= */
+
+  private async initMic() {
+    if (this.micCtx) return;
+
+    this.micCtx = new AudioContext({
       sampleRate: 44100,
-      latencyHint: 'playback' // Cruciale: dice ad Android "sono un player musicale"
+      latencyHint: 'interactive' // ok per input
     });
-    this.analyser = this.audioCtx.createAnalyser();
+
+    this.analyser = this.micCtx.createAnalyser();
     this.analyser.fftSize = 2048;
   }
 
   async startMic(mode: 'live' | 'recording') {
-    await this.initAudio();
+    await this.initMic();
     this.mode = mode;
     this.lastStableMidi = null;
 
     try {
-      // SETTAGGI "YOUTUBE-STYLE" PER IL MICROFONO
-      // Disabilitando questi 3, Android spesso evita di attivare la modalità chiamata
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: false, 
-          noiseSuppression: false, 
-          autoGainControl: false,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
         }
       });
 
-      this.source = this.audioCtx!.createMediaStreamSource(this.micStream);
+      this.source = this.micCtx!.createMediaStreamSource(this.micStream);
       this.source.connect(this.analyser!);
-      
+
       this.isProcessing = true;
-      this.recordingStart = this.audioCtx!.currentTime;
+      this.recordingStart = this.micCtx!.currentTime;
       this.process();
     } catch (e) {
-      console.error("Microfono bloccato");
+      console.error('Microfono bloccato', e);
     }
   }
 
-  // QUESTA FUNZIONE È QUELLA CHE SBLOCCA LA CASSA
   async stopMic() {
     this.isProcessing = false;
     this.mode = 'idle';
 
     if (this.micStream) {
-      this.micStream.getTracks().forEach(track => {
-        track.stop(); // SPEGNE IL MICROFONO FISICAMENTE
-      });
+      this.micStream.getTracks().forEach(t => t.stop());
       this.micStream = null;
     }
 
-    // KILLIAMO IL CONTESTO: Se non lo facciamo, Android resta in modalità chiamata
-    if (this.audioCtx) {
-      await this.audioCtx.close();
-      this.audioCtx = null;
+    if (this.micCtx) {
+      await this.micCtx.close(); // 🔥 fondamentale
+      this.micCtx = null;
     }
 
-    this.onNoteUpdate(null, null);
+    this.analyser = null;
+    this.source = null;
     this.lastStableMidi = null;
+    this.onNoteUpdate(null, null);
   }
 
-  async previewSequence() {
-    // Prima di suonare, resettiamo tutto per tornare in modalità "Musica/YouTube"
-    await this.stopMic();
-    await this.initAudio();
+  /* ================= PLAYBACK CONTEXT ================= */
 
-    if (!this.instrument || this.sequence.length === 0 || !this.audioCtx) return;
+  private async initPlayback() {
+    if (this.playbackCtx) return;
 
-    const now = this.audioCtx.currentTime;
-    this.sequence.forEach(note => {
-      this.instrument.play(note.midi, now + note.startTime + 0.1, { 
-        duration: note.duration, 
-        gain: 1.0 
-      });
+    this.playbackCtx = new AudioContext({
+      sampleRate: 44100,
+      latencyHint: 'playback' // 🔥 forza MEDIA
     });
   }
 
+  async loadInstrument(instrumentId: string) {
+    await this.initPlayback();
+
+    if (!(window as any).Soundfont) {
+      await this.loadScript(
+        'https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js'
+      );
+    }
+
+    try {
+      this.instrument = await (window as any).Soundfont.instrument(
+        this.playbackCtx!,
+        instrumentId,
+        { soundfont: 'FluidR3_GM' }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async previewSequence() {
+    await this.stopMic();          // ⛔ chiude CALL
+    await this.initPlayback();     // ✅ apre MEDIA
+
+    if (!this.instrument || !this.sequence.length || !this.playbackCtx) return;
+
+    const now = this.playbackCtx.currentTime;
+
+    this.sequence.forEach(note => {
+      this.instrument.play(
+        note.midi,
+        now + note.startTime + 0.1,
+        {
+          duration: note.duration,
+          gain: 1.0
+        }
+      );
+    });
+  }
+
+  private playNote(midi: number) {
+    if (!this.instrument || !this.playbackCtx) return;
+
+    if (this.activeLiveNote) {
+      try { this.activeLiveNote.stop(); } catch {}
+    }
+
+    this.activeLiveNote = this.instrument.play(
+      midi,
+      this.playbackCtx.currentTime,
+      { gain: 1.0 }
+    );
+  }
+
+  /* ================= AUDIO LOOP ================= */
+
   private process = () => {
-    if (!this.isProcessing || !this.analyser || !this.audioCtx) return;
+    if (!this.isProcessing || !this.analyser || !this.micCtx) return;
+
     const buf = new Float32Array(this.analyser.fftSize);
     this.analyser.getFloatTimeDomainData(buf);
-    const { pitch, clarity } = detectPitch(buf, this.audioCtx.sampleRate);
-    
+
+    const { pitch, clarity } = detectPitch(buf, this.micCtx.sampleRate);
+
     if (pitch > 0 && clarity > 0.85) {
-      let midi = Math.round(12 * Math.log2(pitch / 440) + 69) + (this.octaveShift * 12);
+      const midi =
+        Math.round(12 * Math.log2(pitch / 440) + 69) +
+        this.octaveShift * 12;
+
       if (midi !== this.lastStableMidi) {
         this.playNote(midi);
+
         if (this.mode === 'recording') {
-          this.sequence.push({ 
-            midi, 
-            startTime: this.audioCtx.currentTime - this.recordingStart, 
-            duration: 0.2, 
-            pitchTrajectory: [] 
+          this.sequence.push({
+            midi,
+            startTime: this.micCtx.currentTime - this.recordingStart,
+            duration: 0.2,
+            pitchTrajectory: []
           });
         }
+
         this.lastStableMidi = midi;
         this.onNoteUpdate(midi, midiToNoteName(midi));
       }
     }
-    if (this.isProcessing) requestAnimationFrame(this.process);
-  }
 
-  private playNote(midi: number) {
-    if (this.activeLiveNote) try { this.activeLiveNote.stop(); } catch(e) {}
-    if (this.instrument && this.audioCtx) {
-      this.activeLiveNote = this.instrument.play(midi, this.audioCtx.currentTime, { gain: 1.0 });
-    }
-  }
+    requestAnimationFrame(this.process);
+  };
 
-  async loadInstrument(instrumentId: string) {
-    if (!this.audioCtx) await this.initAudio();
-    if (!(window as any).Soundfont) {
-      await this.loadScript('https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js');
-    }
-    try {
-      this.instrument = await (window as any).Soundfont.instrument(this.audioCtx!, instrumentId, { soundfont: 'FluidR3_GM' });
-      return true;
-    } catch (e) { return false; }
-  }
+  /* ================= UTILS ================= */
 
   private loadScript(src: string): Promise<void> {
-    return new Promise((res) => {
+    return new Promise(res => {
       const s = document.createElement('script');
-      s.src = src; s.onload = () => res();
+      s.src = src;
+      s.onload = () => res();
       document.head.appendChild(s);
     });
   }
 
-  getAnalyser() { return this.analyser; }
   getSequence() { return this.sequence; }
-  setOctaveShift(s: number) { this.octaveShift = s; }
+  setOctaveShift(v: number) { this.octaveShift = v; }
   setSensitivity(v: number) { this.sensitivity = v; }
 }
