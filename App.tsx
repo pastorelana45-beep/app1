@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './Header.tsx';
 import { Visualizer } from './Visualizer.tsx';
@@ -9,7 +10,7 @@ import { exportMidi, downloadBlob } from './midiExport.ts';
 import { ProLanding } from './ProLanding.tsx';
 import { licenseService } from './licenseService.ts';
 import { 
-  Mic, Square, Save, Activity, ChevronUp, ChevronDown, Play, Bluetooth, Zap
+  Mic, Square, Save, Activity, ChevronUp, ChevronDown, Play, Bluetooth, Zap, MicOff
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -64,11 +65,11 @@ const App: React.FC = () => {
       setAppState('idle');
     } else {
       try {
-        if (appState === 'live') audioEngineRef.current?.stopMic();
+        if (appState !== 'idle') audioEngineRef.current?.stopMic();
         await audioEngineRef.current?.startMic('recording');
         setAppState('recording');
       } catch (e) {
-        alert("Microfono necessario per registrare.");
+        alert("Errore microfono: assicurati di aver concesso i permessi.");
       }
     }
   };
@@ -79,11 +80,11 @@ const App: React.FC = () => {
       setAppState('idle');
     } else {
       try {
-        if (appState === 'recording') audioEngineRef.current?.stopMic();
+        if (appState !== 'idle') audioEngineRef.current?.stopMic();
         await audioEngineRef.current?.startMic('live');
         setAppState('live');
       } catch (e) {
-        alert("Microfono necessario per il monitor live.");
+        alert("Errore microfono: assicurati di aver concesso i permessi.");
       }
     }
   };
@@ -135,7 +136,15 @@ const App: React.FC = () => {
 
           <div className="glass p-8 rounded-[3rem] border-white/5 space-y-10 shadow-2xl">
             <div className="space-y-4">
-              <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-white/20">Studio Controls</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.4em] text-white/20">Studio Controls</h3>
+                {appState === 'idle' && (
+                  <div className="flex items-center gap-1.5 px-2 py-0.5 bg-zinc-950 rounded-full border border-white/5">
+                    <MicOff className="w-2.5 h-2.5 text-zinc-600" />
+                    <span className="text-[7px] font-black text-zinc-600 uppercase tracking-widest">Mic Offline</span>
+                  </div>
+                )}
+              </div>
               <div className="flex flex-col gap-3">
                 <button 
                   onClick={handleRec}
@@ -257,7 +266,9 @@ const App: React.FC = () => {
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${appState === 'idle' ? 'bg-zinc-600' : 'bg-green-500 animate-pulse'}`} />
-            <span className="text-[9px] font-black uppercase tracking-widest text-white/40">Engine Status: {appState}</span>
+            <span className="text-[9px] font-black uppercase tracking-widest text-white/40">
+              Engine Status: {appState} {appState === 'idle' ? '(Mic Off)' : '(Mic On)'}
+            </span>
           </div>
           <div className="h-4 w-[1px] bg-white/10" />
           <div className="flex items-center gap-2">
