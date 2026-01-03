@@ -21,28 +21,23 @@ export class AudioEngine {
     this.onNoteUpdate = onNoteUpdate;
   }
 
-  /**
-   * Imposta lo shift dell'ottava per la trasposizione in tempo reale.
-   */
   setOctaveShift(shift: number) { 
     this.octaveShift = shift; 
   }
   
-  /**
-   * Imposta la soglia di sensibilità del volume per l'attivazione delle note.
-   */
   setSensitivity(val: number) { 
     this.sensitivity = val; 
   }
 
   /**
-   * Inizializza l'AudioContext con parametri ottimizzati per la latenza.
+   * FIX MODALITÀ CHIAMATA: Usiamo 'playback' invece di 'interactive'
+   * per forzare il sistema a usare il canale multimediale.
    */
   private initAudio() {
     if (!this.audioCtx) {
       this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ 
-        sampleRate: 48000,
-        latencyHint: 'interactive' 
+        sampleRate: 44100, // Standard musicale (44.1kHz)
+        latencyHint: 'playback' // Cruciale per evitare il profilo voce
       });
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 2048;
@@ -52,9 +47,6 @@ export class AudioEngine {
     }
   }
 
-  /**
-   * Carica lo strumento MIDI (Soundfont).
-   */
   async loadInstrument(instrumentId: string) {
     this.initAudio();
     if (!(window as any).Soundfont) {
@@ -90,7 +82,7 @@ export class AudioEngine {
   }
 
   /**
-   * Avvia l'acquisizione dal microfono.
+   * AVVIO MICROFONO CON FIX AI STUDIO
    */
   async startMic(mode: 'live' | 'recording') {
     this.initAudio();
@@ -101,11 +93,20 @@ export class AudioEngine {
     try {
       const constraints = {
         audio: {
+          // Parametri standard
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          sampleRate: 48000
-        }
+          sampleRate: { ideal: 44100 },
+          
+          // FLAG SPECIFICI AI STUDIO (Chromium/Android)
+          // Questi flag dicono a Chrome: "Non è una chiamata!"
+          googEchoCancellation: false,
+          googAutoGainControl: false,
+          googNoiseSuppression: false,
+          googHighpassFilter: false,
+          googTypingNoiseDetection: false
+        } as any
       };
 
       this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -121,9 +122,6 @@ export class AudioEngine {
     }
   }
 
-  /**
-   * Ferma il microfono e rilascia TOTALMENTE l'hardware.
-   */
   stopMic() {
     this.isProcessing = false;
     this.mode = 'idle';
@@ -131,6 +129,7 @@ export class AudioEngine {
     if (this.micStream) {
       this.micStream.getTracks().forEach(track => {
         track.stop(); 
+        track.enabled = false; // Disabilita fisicamente la traccia
       });
       this.micStream = null;
     }
@@ -150,25 +149,26 @@ export class AudioEngine {
   }
 
   /**
-   * Riproduce la sequenza registrata senza riattivare il microfono.
+   * PREVIEW SEQUENZA CON FORZATURA MULTIMEDIA
    */
   previewSequence() {
     if (!this.instrument || this.sequence.length === 0 || !this.audioCtx) return;
-    const now = this.audioCtx.currentTime;
     
+    // Assicuriamoci che il microfono sia spento prima di riprodurre
+    this.stopMic();
+    
+    const now = this.audioCtx.currentTime;
     if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
 
     this.sequence.forEach(note => {
-      this.instrument.play(note.midi, now + note.startTime, { 
+      // Offset di 0.1 per sincronizzazione su canali multimediali
+      this.instrument.play(note.midi, now + note.startTime + 0.1, { 
         duration: note.duration, 
-        gain: 0.8 
+        gain: 1.0 // Gain pieno per canali media
       });
     });
   }
 
-  /**
-   * Loop principale di analisi del pitch.
-   */
   private process = () => {
     if (!this.isProcessing || !this.analyser || !this.audioCtx) return;
     
